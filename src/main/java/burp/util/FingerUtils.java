@@ -25,6 +25,8 @@ public class FingerUtils {
     private static final int RESULT_SIZE = 10000;
 
     private static final int CONTEXT_LENGTH = 40; // 前后各40个字符
+    private static final int BINARY_SAMPLE_SIZE = 4000;
+    private static final double BINARY_RATIO_THRESHOLD = 0.3;
 
     public static ApiDataModel FingerFilter(String url, ApiDataModel originalApiData, Map<String, Object> pathData, IExtensionHelpers helpers) {
         // 对originalApiData进行匹配
@@ -73,6 +75,10 @@ public class FingerUtils {
             // 响应的body值
             String responseBody = new String(oneResponseBytes, StandardCharsets.UTF_8);
             int responseBodyLength = responseBody.length();
+            boolean skipBodyMatch = isLikelyBinary(oneResponseBytes);
+            if (skipBodyMatch) {
+                BurpExtender.getStderr().println("[!]响应包疑似二进制内容，跳过 body 指纹匹配以降低误报。");
+            }
             for (FingerPrintRule rule : BurpExtender.fingerprintRules) {
                 String color = "blue";
                 // 过滤掉白名单URL后缀、白名单路径
@@ -84,7 +90,11 @@ public class FingerUtils {
                 }
 
                 String locationContent = "";
-                if ("body".equals(rule.getLocation())) {
+                boolean isBodyLocation = "body".equals(rule.getLocation());
+                if (isBodyLocation) {
+                    if (skipBodyMatch) {
+                        continue;
+                    }
                     locationContent = responseBody;
                 } else if ("urlPath".equals(rule.getLocation())) {
                     locationContent = onePath;
@@ -96,22 +106,30 @@ public class FingerUtils {
 
                     try {
                         if (rule.getMatch().equals("keyword")) {
-                            if (!locationContent.toLowerCase().contains(key.toLowerCase())){
+                            if (!isKeywordMatch(locationContent, key)){
                                 isMatch = false;
                                 break;
                             }
                         } else if (rule.getMatch().equals("regular")) {
                             boolean foundMatch = false;
                             isMatch = false;
-                            for (int start = 0; start < responseBodyLength; start += CHUNK_SIZE) {
-                                int end = Math.min(start + CHUNK_SIZE, responseBodyLength);
-                                String responseBodyChunk = responseBody.substring(start, end);
+                            if (isBodyLocation) {
+                                for (int start = 0; start < responseBodyLength; start += CHUNK_SIZE) {
+                                    int end = Math.min(start + CHUNK_SIZE, responseBodyLength);
+                                    String responseBodyChunk = responseBody.substring(start, end);
+                                    Pattern pattern = Pattern.compile(key, Pattern.CASE_INSENSITIVE);
+                                    Matcher matcher = pattern.matcher(responseBodyChunk);
+                                    if (matcher.find()) {
+                                        foundMatch = isMatchedValueValid(matcher.group(), rule.getAccuracy());
+                                        break;
+                                        // 将匹配到的内容添加到StringBuilder中
+                                    }
+                                }
+                            } else {
                                 Pattern pattern = Pattern.compile(key, Pattern.CASE_INSENSITIVE);
-                                Matcher matcher = pattern.matcher(responseBodyChunk);
+                                Matcher matcher = pattern.matcher(locationContent);
                                 if (matcher.find()) {
-                                    foundMatch = true;
-                                    break;
-                                    // 将匹配到的内容添加到StringBuilder中
+                                    foundMatch = isMatchedValueValid(matcher.group(), rule.getAccuracy());
                                 }
                             }
                             if (foundMatch) {
@@ -138,21 +156,40 @@ public class FingerUtils {
                     StringBuilder matchedResults = new StringBuilder("");
                     for (String key : rule.getKeyword()) {
                         try {
-                            if (rule.getMatch().equals("keyword") && locationContent.toLowerCase().contains(key.toLowerCase())) {
+                            if (rule.getMatch().equals("keyword") && isKeywordMatch(locationContent, key)) {
                                 String matchedContext = getMatchedContext(locationContent, key, color);
                                 matchedResults.append(matchedContext);
                             } else if (rule.getMatch().equals("regular")) {
                                 boolean foundMatch = false;
-                                for (int start = 0; start < responseBodyLength; start += CHUNK_SIZE) {
-                                    int end = Math.min(start + CHUNK_SIZE, responseBodyLength);
-                                    String responseBodyChunk = responseBody.substring(start, end);
+                                if (isBodyLocation) {
+                                    for (int start = 0; start < responseBodyLength; start += CHUNK_SIZE) {
+                                        int end = Math.min(start + CHUNK_SIZE, responseBodyLength);
+                                        String responseBodyChunk = responseBody.substring(start, end);
 
+                                        Pattern pattern = Pattern.compile(key, Pattern.CASE_INSENSITIVE);
+                                        Matcher matcher = pattern.matcher(responseBodyChunk);
+                                        while (matcher.find()) {
+                                            foundMatch = isMatchedValueValid(matcher.group(), rule.getAccuracy());
+                                            if (!foundMatch) {
+                                                continue;
+                                            }
+                                            // 将匹配到的内容添加到StringBuilder中
+                                            String matchedContext = getMatchedContext(responseBodyChunk, matcher.start(), matcher.end(), color);
+                                            matchedResults.append(matchedContext);
+                                            if (matchedResults.length() > RESULT_SIZE) {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else {
                                     Pattern pattern = Pattern.compile(key, Pattern.CASE_INSENSITIVE);
-                                    Matcher matcher = pattern.matcher(responseBodyChunk);
+                                    Matcher matcher = pattern.matcher(locationContent);
                                     while (matcher.find()) {
-                                        foundMatch = true;
-                                        // 将匹配到的内容添加到StringBuilder中
-                                        String matchedContext = getMatchedContext(responseBodyChunk, matcher.start(), matcher.end(), color);
+                                        foundMatch = isMatchedValueValid(matcher.group(), rule.getAccuracy());
+                                        if (!foundMatch) {
+                                            continue;
+                                        }
+                                        String matchedContext = getMatchedContext(locationContent, matcher.start(), matcher.end(), color);
                                         matchedResults.append(matchedContext);
                                         if (matchedResults.length() > RESULT_SIZE) {
                                             break;
@@ -217,11 +254,62 @@ public class FingerUtils {
         return getMatchedContext(content, index, index + key.length(), color);
     }
 
+    private static boolean isKeywordMatch(String content, String keyword) {
+        if (keyword == null || keyword.isEmpty()) {
+            return false;
+        }
+        String loweredContent = content.toLowerCase();
+        String loweredKeyword = keyword.toLowerCase();
+        if (!loweredContent.contains(loweredKeyword)) {
+            return false;
+        }
+        if (!loweredKeyword.matches("[a-z0-9_]+")) {
+            return true;
+        }
+        Pattern pattern = Pattern.compile("(?i)(\\b|\"|')" + Pattern.quote(keyword) + "(\\b|\"|')", Pattern.CASE_INSENSITIVE);
+        return pattern.matcher(content).find();
+    }
+
+    private static boolean isMatchedValueValid(String matchedValue, String accuracy) {
+        if (matchedValue == null) {
+            return false;
+        }
+        if ("lower".equalsIgnoreCase(accuracy)) {
+            return matchedValue.length() >= 8;
+        }
+        if ("medium".equalsIgnoreCase(accuracy)) {
+            return matchedValue.length() >= 6;
+        }
+        return true;
+    }
+
     private static String getMatchedContext(String content, int start, int end, String color) {
         int contextEnd = Math.min(content.length(), end + CONTEXT_LENGTH);
         String match = "<span style='color: " + color + ";'>" +  Utils.encodeForHTML(content.substring(start, end)) + "</span>";
         String afterMatch =  Utils.encodeForHTML(content.substring(end, contextEnd));
         return "<br>=> " + match + afterMatch;
+    }
+
+    private static boolean isLikelyBinary(byte[] content) {
+        if (content == null || content.length == 0) {
+            return false;
+        }
+        int sampleLength = Math.min(content.length, BINARY_SAMPLE_SIZE);
+        int suspiciousCount = 0;
+        int checked = 0;
+        for (int i = 0; i < sampleLength; i++) {
+            int value = content[i] & 0xFF;
+            if (value == 0) {
+                suspiciousCount++;
+            } else if (value < 0x09 || (value > 0x0D && value < 0x20) || value == 0x7F) {
+                suspiciousCount++;
+            }
+            checked++;
+        }
+        if (checked == 0) {
+            return false;
+        }
+        return ((double) suspiciousCount / checked) > BINARY_RATIO_THRESHOLD;
     }
 
     public static ApiDataModel FingerFilter(Map<String, Object> onePathData){
@@ -257,7 +345,11 @@ public class FingerUtils {
         String responseBody = new String(oneResponseBytes, StandardCharsets.UTF_8);
         int responseBodyLength = responseBody.length();
         // 响应包是3开头或者404的则不进行匹配
-        if (!((String)onePathData.get("status")).startsWith("3") || !((String)onePathData.get("status")).equals("404")){
+        if (!((String)onePathData.get("status")).startsWith("3") && !((String)onePathData.get("status")).equals("404")){
+            boolean skipBodyMatch = isLikelyBinary(oneResponseBytes);
+            if (skipBodyMatch) {
+                BurpExtender.getStderr().println("[!]响应包疑似二进制内容，跳过 body 指纹匹配以降低误报。");
+            }
             // 响应头
             for (FingerPrintRule rule : BurpExtender.fingerprintRules) {
                 String color = "blue";
@@ -270,7 +362,11 @@ public class FingerUtils {
                 }
 
                 String locationContent = "";
-                if ("body".equals(rule.getLocation())) {
+                boolean isBodyLocation = "body".equals(rule.getLocation());
+                if (isBodyLocation) {
+                    if (skipBodyMatch) {
+                        continue;
+                    }
                     locationContent = responseBody;
                 } else if ("urlPath".equals(rule.getLocation())) {
                     locationContent = onePath;
@@ -281,23 +377,31 @@ public class FingerUtils {
                 for (String key : rule.getKeyword()) {
                     try {
                         if (rule.getMatch().equals("keyword")) {
-                            if (!locationContent.toLowerCase().contains(key.toLowerCase())){
+                            if (!isKeywordMatch(locationContent, key)){
                                 isMatch = false;
                                 break;
                             }
                         } else if (rule.getMatch().equals("regular")) {
                             boolean foundMatch = false;
                             isMatch = false;
-                            for (int start = 0; start < responseBodyLength; start += CHUNK_SIZE) {
-                                int end = Math.min(start + CHUNK_SIZE, responseBodyLength);
-                                String responseBodyChunk = responseBody.substring(start, end);
+                            if (isBodyLocation) {
+                                for (int start = 0; start < responseBodyLength; start += CHUNK_SIZE) {
+                                    int end = Math.min(start + CHUNK_SIZE, responseBodyLength);
+                                    String responseBodyChunk = responseBody.substring(start, end);
 
+                                    Pattern pattern2 = Pattern.compile(key, Pattern.CASE_INSENSITIVE);
+                                    Matcher matcher2 = pattern2.matcher(responseBodyChunk);
+                                    while (matcher2.find()) {
+                                        foundMatch = isMatchedValueValid(matcher2.group(), rule.getAccuracy());
+                                        break;
+                                        // 将匹配到的内容添加到StringBuilder中
+                                    }
+                                }
+                            } else {
                                 Pattern pattern2 = Pattern.compile(key, Pattern.CASE_INSENSITIVE);
-                                Matcher matcher2 = pattern2.matcher(responseBodyChunk);
-                                while (matcher2.find()) {
-                                    foundMatch = true;
-                                    break;
-                                    // 将匹配到的内容添加到StringBuilder中
+                                Matcher matcher2 = pattern2.matcher(locationContent);
+                                if (matcher2.find()) {
+                                    foundMatch = isMatchedValueValid(matcher2.group(), rule.getAccuracy());
                                 }
                             }
                             if (foundMatch) {
@@ -324,21 +428,40 @@ public class FingerUtils {
                     StringBuilder matchedResults = new StringBuilder("");
                     for (String key : rule.getKeyword()) {
                         try {
-                            if (rule.getMatch().equals("keyword") && locationContent.toLowerCase().contains(key.toLowerCase())) {
+                            if (rule.getMatch().equals("keyword") && isKeywordMatch(locationContent, key)) {
                                 String matchedContext = getMatchedContext(locationContent, key, color);
                                 matchedResults.append(matchedContext);
                             } else if (rule.getMatch().equals("regular")) {
                                 boolean foundMatch = false;
-                                for (int start = 0; start < responseBodyLength; start += CHUNK_SIZE) {
-                                    int end = Math.min(start + CHUNK_SIZE, responseBodyLength);
-                                    String responseBodyChunk = responseBody.substring(start, end);
+                                if (isBodyLocation) {
+                                    for (int start = 0; start < responseBodyLength; start += CHUNK_SIZE) {
+                                        int end = Math.min(start + CHUNK_SIZE, responseBodyLength);
+                                        String responseBodyChunk = responseBody.substring(start, end);
 
+                                        Pattern pattern = Pattern.compile(key, Pattern.CASE_INSENSITIVE);
+                                        Matcher matcher = pattern.matcher(responseBodyChunk);
+                                        while (matcher.find()) {
+                                            foundMatch = isMatchedValueValid(matcher.group(), rule.getAccuracy());
+                                            if (!foundMatch) {
+                                                continue;
+                                            }
+                                            // 将匹配到的内容添加到StringBuilder中
+                                            String matchedContext = getMatchedContext(responseBodyChunk, matcher.start(), matcher.end(), color);
+                                            matchedResults.append(matchedContext);
+                                            if (matchedResults.length() > RESULT_SIZE) {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else {
                                     Pattern pattern = Pattern.compile(key, Pattern.CASE_INSENSITIVE);
-                                    Matcher matcher = pattern.matcher(responseBodyChunk);
+                                    Matcher matcher = pattern.matcher(locationContent);
                                     while (matcher.find()) {
-                                        foundMatch = true;
-                                        // 将匹配到的内容添加到StringBuilder中
-                                        String matchedContext = getMatchedContext(responseBodyChunk, matcher.start(), matcher.end(), color);
+                                        foundMatch = isMatchedValueValid(matcher.group(), rule.getAccuracy());
+                                        if (!foundMatch) {
+                                            continue;
+                                        }
+                                        String matchedContext = getMatchedContext(locationContent, matcher.start(), matcher.end(), color);
                                         matchedResults.append(matchedContext);
                                         if (matchedResults.length() > RESULT_SIZE) {
                                             break;

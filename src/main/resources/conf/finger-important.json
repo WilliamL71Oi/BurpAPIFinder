@@ -1,6 +1,69 @@
 {
   "fingerprint": [
     {
+      "match": "regular",
+      "location": "body",
+      "keyword": [
+        "eyJ[a-zA-Z0-9_-]{10,}\\.[a-zA-Z0-9_-]{10,}\\.[a-zA-Z0-9_-]{10,}"
+      ],
+      "type": "敏感内容",
+      "describe": "JWT Token",
+      "isImportant": true,
+      "isOpen": true,
+      "accuracy": "high"
+    },
+    {
+      "match": "keyword",
+      "location": "body",
+      "keyword": [
+        "access_token",
+        "token_type",
+        "expires_in",
+        "Content-Type: application/json"
+      ],
+      "type": "敏感内容",
+      "describe": "OAuth令牌",
+      "isImportant": true,
+      "isOpen": true,
+      "accuracy": "high"
+    },
+    {
+      "match": "regular",
+      "location": "body",
+      "keyword": [
+        "-----BEGIN ([A-Z ]+)?PRIVATE KEY-----"
+      ],
+      "type": "敏感内容",
+      "describe": "私钥泄露",
+      "isImportant": true,
+      "isOpen": true,
+      "accuracy": "high"
+    },
+    {
+      "match": "regular",
+      "location": "body",
+      "keyword": [
+        "xox[baprs]-[0-9a-zA-Z-]{10,}"
+      ],
+      "type": "敏感内容",
+      "describe": "Slack Token",
+      "isImportant": true,
+      "isOpen": true,
+      "accuracy": "high"
+    },
+    {
+      "match": "regular",
+      "location": "body",
+      "keyword": [
+        "(AKIA|ASIA)[0-9A-Z]{16}"
+      ],
+      "type": "敏感内容",
+      "describe": "AWS Access Key",
+      "isImportant": true,
+      "isOpen": true,
+      "accuracy": "high"
+    },
+    {
       "match": "keyword",
       "location": "body",
       "keyword": [
