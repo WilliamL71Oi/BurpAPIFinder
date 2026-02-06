@@ -82,6 +82,7 @@ public class FingerConfigTab extends JPanel {
         convenientOperationMenu.add(allItem);
         // 检索框
         JTextField searchField = new JTextField(15);
+        searchField.setToolTipText("支持按类型/描述/关键词检索");
         // 检索按钮
         JButton searchButton = new JButton();
         searchButton.setIcon(UiUtils.getImageIcon("/icon/searchButton.png"));
@@ -103,6 +104,9 @@ public class FingerConfigTab extends JPanel {
         JButton moreButton = new JButton();
         moreButton.setIcon(UiUtils.getImageIcon("/icon/moreButton.png"));
 
+        allButton.setToolTipText("显示全部规则");
+        convenientOperationButton.setToolTipText("快捷筛选");
+        moreButton.setToolTipText("更多功能");
         // 布局
         rightPanel.add(allButton);
         rightPanel.add(searchField);
@@ -576,10 +580,33 @@ public class FingerConfigTab extends JPanel {
         }
 
 
-        table = new JTable(model);
+        table = new JTable(model) {
+            @Override
+            public Component prepareRenderer(TableCellRenderer renderer, int row, int column) {
+                Component component = super.prepareRenderer(renderer, row, column);
+                if (!isRowSelected(row)) {
+                    component.setBackground(row % 2 == 0 ? new Color(245, 245, 245) : Color.WHITE);
+                }
+                return component;
+            }
+
+            @Override
+            public String getToolTipText(MouseEvent e) {
+                int row = rowAtPoint(e.getPoint());
+                int column = columnAtPoint(e.getPoint());
+                if (row < 0 || column < 0) {
+                    return null;
+                }
+                Object value = getValueAt(row, column);
+                return value == null ? null : value.toString();
+            }
+        };
         CenterRenderer centerRenderer = new CenterRenderer();
         int maxColumnWidth = 200;
         int cmsColumnWidth = 180;
+        table.setRowHeight(28);
+        table.setAutoCreateRowSorter(true);
+        table.setFillsViewportHeight(true);
         table.getColumnModel().getColumn(0).setCellRenderer(centerRenderer);
         table.getColumnModel().getColumn(0).setPreferredWidth(100);
         table.getColumnModel().getColumn(0).setMaxWidth(maxColumnWidth);
